@@ -493,11 +493,11 @@ class MainWindow(QMainWindow):
         # Frequency control
         vbox2.addWidget(QLabel("Frequency (MHz):"))
         self.slider_freq = QSlider(Qt.Horizontal)
-        self.slider_freq.setRange(25, 100)  # 2.5 to 10 MHz
-        self.slider_freq.setValue(50)  # 5 MHz default
+        self.slider_freq.setRange(25, 500)  # 2.5 to 20 MHz
+        self.slider_freq.setValue(500)  # 20 MHz default
         self.slider_freq.valueChanged.connect(self.update_tab2)
         vbox2.addWidget(self.slider_freq)
-        self.lbl_freq = QLabel("5.0 MHz")
+        self.lbl_freq = QLabel("50.0 MHz")
         vbox2.addWidget(self.lbl_freq)
         
         # Aperture control  
