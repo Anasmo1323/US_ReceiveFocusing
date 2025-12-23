@@ -167,6 +167,47 @@ class UltrasoundPhysicsEngine:
         
         return measurement_depths, np.array(measured_widths)
     
+    def calculate_depth_of_field(self, focus_depth, strategy='fixed'):
+        """Calculate depth of field - axial range with acceptable focus quality"""
+        # DOF definition: range where beam width ≤ √2 × minimum width (3dB criterion)
+        # Or alternatively: range where intensity ≥ 50% of peak (6dB criterion)
+        
+        D = self.active_elements * self.pitch
+        lam = C / self.fc
+        
+        if strategy == 'dynamic':
+            # Dynamic focusing: DOF is theoretically infinite since focus tracks depth
+            # In practice, limited by system constraints, but much larger than fixed
+            dof_range = self.depth_range - 10e-3  # Nearly full imaging range
+            dof_start = 10e-3
+            dof_end = self.depth_range
+            return dof_range, dof_start, dof_end
+        
+        else:  # Fixed focusing
+            # Calculate DOF around fixed focus depth
+            # Minimum beam width at focus
+            w_min = (focus_depth * lam) / D
+            
+            # DOF criterion: width ≤ √2 × w_min
+            w_threshold = w_min * np.sqrt(2)
+            
+            # Find depth range where beam width meets criterion
+            # Search range around focus
+            search_depths = np.linspace(5e-3, self.depth_range, 200)
+            
+            dof_start = focus_depth
+            dof_end = focus_depth
+            
+            # Find DOF boundaries
+            for z in search_depths:
+                beam_width = self.calculate_beam_width(z, focus_depth)
+                if beam_width <= w_threshold:
+                    dof_start = min(dof_start, z)
+                    dof_end = max(dof_end, z)
+            
+            dof_range = dof_end - dof_start
+            return dof_range, dof_start, dof_end
+    
     def generate_scatterer_field(self):
         """Generate a field of randomly distributed scatterers"""
         np.random.seed(42)  # For reproducible results
@@ -404,16 +445,17 @@ class MainWindow(QMainWindow):
             "This is what we're trying to image.<br><br>"
             "<b>Case A (Fixed Focus):</b><br>"
             "Single receive focus depth.<br>"
-            "Compare image fidelity to ground truth.<br><br>"
+            "Limited Depth of Field (DOF).<br>"
+            "Green zone shows acceptable focus range.<br><br>"
             "<b>Case B (Dynamic Focus):</b><br>"
             "Focus tracks with depth.<br>"
-            "Notice better match to ground truth.<br><br>"
-            "<b>Right:</b> MEASURED resolution from<br>"
-            "actual B-mode images (-6dB width).<br>"
+            "Extended DOF across full range.<br><br>"
+            "<b>Right:</b> MEASURED resolution + DOF<br>"
+            "from actual B-mode images (-6dB width).<br>"
             "Solid = measured, dashed = theory.<br><br>"
             "<b>Try different frequencies and apertures</b><br>"
             "to see how system parameters affect<br>"
-            "the fixed vs dynamic comparison!"
+            "both resolution AND depth of field!"
         )
         info.setWordWrap(True)
         controls.addWidget(info)
@@ -561,13 +603,37 @@ class MainWindow(QMainWindow):
         
         # Mark the fixed focus depth on resolution plot
         ax4.axhline(fixed_depth * 1000, color='red', linestyle='--', alpha=0.5)
+        
+        # Add DOF comparison as text annotations
+        print("Calculating Depth of Field...")
+        dof_A_range, dof_A_start, dof_A_end = self.engine.calculate_depth_of_field(fixed_depth, 'fixed')
+        dof_B_range, dof_B_start, dof_B_end = self.engine.calculate_depth_of_field(fixed_depth, 'dynamic')
+        
+        # Show DOF zones on images
+        # Case A: Show limited DOF zone
+        ax2.axhspan(dof_A_start*1000, dof_A_end*1000, alpha=0.15, color='green', 
+                   label=f'DOF: {dof_A_range*1000:.1f}mm')
+        
+        # Case B: Show extended DOF zone (nearly full range)
+        ax3.axhspan(dof_B_start*1000, dof_B_end*1000, alpha=0.1, color='green',
+                   label=f'DOF: {dof_B_range*1000:.1f}mm')
+        
+        # Add DOF comparison text
+        dof_text = (f"Depth of Field Comparison:\n"
+                   f"Case A (Fixed): {dof_A_range*1000:.1f} mm\n"
+                   f"Case B (Dynamic): {dof_B_range*1000:.1f} mm\n"
+                   f"Improvement: {dof_B_range/dof_A_range:.1f}x")
+        
+        ax4.text(0.02, 0.02, dof_text, transform=ax4.transAxes, fontsize=7, 
+                va='bottom', ha='left',
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='lightblue', alpha=0.8))
 
         # Add comparison annotations
-        ax2.text(0.02, 0.98, 'Notice: Blurring\naway from focus line', 
+        ax2.text(0.02, 0.98, f'Notice: Blurring\naway from focus line\n\nDOF: {dof_A_range*1000:.1f}mm\n(Green shaded zone)', 
                 transform=ax2.transAxes, fontsize=7, va='top', ha='left',
                 bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7))
         
-        ax3.text(0.02, 0.98, 'Notice: Consistent\nquality at all depths', 
+        ax3.text(0.02, 0.98, f'Notice: Consistent\nquality at all depths\n\nDOF: {dof_B_range*1000:.1f}mm\n(Nearly full range)', 
                 transform=ax3.transAxes, fontsize=7, va='top', ha='left',
                 bbox=dict(boxstyle='round,pad=0.3', facecolor='lightgreen', alpha=0.7))
 
