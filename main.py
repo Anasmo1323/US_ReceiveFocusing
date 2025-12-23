@@ -184,6 +184,9 @@ class UltrasoundPhysicsEngine:
             return dof_range, dof_start, dof_end
         
         else:  # Fixed focusing
+            # Ensure focus depth is within valid range
+            focus_depth = max(10e-3, min(focus_depth, self.depth_range))
+            
             # Calculate DOF around fixed focus depth
             # Minimum beam width at focus
             w_min = (focus_depth * lam) / D
@@ -200,12 +203,19 @@ class UltrasoundPhysicsEngine:
             
             # Find DOF boundaries
             for z in search_depths:
-                beam_width = self.calculate_beam_width(z, focus_depth)
-                if beam_width <= w_threshold:
-                    dof_start = min(dof_start, z)
-                    dof_end = max(dof_end, z)
+                try:
+                    beam_width = self.calculate_beam_width(z, focus_depth)
+                    if beam_width <= w_threshold:
+                        dof_start = min(dof_start, z)
+                        dof_end = max(dof_end, z)
+                except:
+                    continue  # Skip invalid calculations
             
+            # Ensure valid DOF range
+            dof_start = max(5e-3, min(dof_start, self.depth_range))
+            dof_end = max(dof_start + 1e-3, min(dof_end, self.depth_range))
             dof_range = dof_end - dof_start
+            
             return dof_range, dof_start, dof_end
     
     def generate_scatterer_field(self):
@@ -325,6 +335,9 @@ class UltrasoundPhysicsEngine:
     
     def generate_ground_truth_image(self):
         """Generate ground truth image showing actual scatterer positions"""
+        # Ground truth should be INDEPENDENT of imaging system parameters!
+        # It represents the actual object, not how we image it
+        
         # Use same grid resolution as B-mode for fair comparison
         x_gt = np.linspace(-self.scan_range, self.scan_range, self.n_lines)
         z_gt = np.linspace(5e-3, self.depth_range, self.n_samples)
@@ -333,17 +346,17 @@ class UltrasoundPhysicsEngine:
         # Initialize ground truth image
         gt_image = np.zeros_like(X_gt)
         
-        # Add each scatterer with realistic point spread function
-        # Use beam width as the PSF size for fair comparison
+        # Add each scatterer with FIXED, system-independent PSF
+        # This represents the "true" scatterer size, not imaging system resolution
         for i in range(len(self.scat_x)):
             # Find closest grid points
             x_idx = np.argmin(np.abs(x_gt - self.scat_x[i]))
             z_idx = np.argmin(np.abs(z_gt - self.scat_z[i]))
             
-            # Calculate realistic PSF size at this depth
-            beam_width = self.calculate_beam_width(self.scat_z[i], self.scat_z[i])  # Ideal focus
-            sigma_x = beam_width / 4  # Lateral PSF
-            sigma_z = C / (4 * self.fc)  # Axial PSF (pulse length)
+            # Use FIXED PSF size independent of system parameters
+            # This represents the intrinsic scatterer size
+            sigma_x = 0.3e-3  # Fixed lateral size (0.3mm)
+            sigma_z = 0.2e-3  # Fixed axial size (0.2mm)
             
             # Add Gaussian blob representing this scatterer
             for dx in range(-2, 3):  # 5x5 kernel
@@ -442,7 +455,7 @@ class MainWindow(QMainWindow):
             "<b>Complete B-Mode Imaging Analysis:</b><br><br>"
             "<b>Ground Truth (Left):</b><br>"
             "Actual scatterer positions.<br>"
-            "This is what we're trying to image.<br><br>"
+            "INDEPENDENT of imaging parameters.<br><br>"
             "<b>Case A (Fixed Focus):</b><br>"
             "Single receive focus depth.<br>"
             "Limited Depth of Field (DOF).<br>"
@@ -453,9 +466,9 @@ class MainWindow(QMainWindow):
             "<b>Right:</b> MEASURED resolution + DOF<br>"
             "from actual B-mode images (-6dB width).<br>"
             "Solid = measured, dashed = theory.<br><br>"
-            "<b>Try different frequencies and apertures</b><br>"
-            "to see how system parameters affect<br>"
-            "both resolution AND depth of field!"
+            "<b>Key Physics:</b> Frequency affects beam<br>"
+            "WIDTH and DOF, but NOT focus DEPTH.<br>"
+            "Higher freq = narrower beam + shorter DOF."
         )
         info.setWordWrap(True)
         controls.addWidget(info)
@@ -606,36 +619,56 @@ class MainWindow(QMainWindow):
         
         # Add DOF comparison as text annotations
         print("Calculating Depth of Field...")
-        dof_A_range, dof_A_start, dof_A_end = self.engine.calculate_depth_of_field(fixed_depth, 'fixed')
-        dof_B_range, dof_B_start, dof_B_end = self.engine.calculate_depth_of_field(fixed_depth, 'dynamic')
-        
-        # Show DOF zones on images
-        # Case A: Show limited DOF zone
-        ax2.axhspan(dof_A_start*1000, dof_A_end*1000, alpha=0.15, color='green', 
-                   label=f'DOF: {dof_A_range*1000:.1f}mm')
-        
-        # Case B: Show extended DOF zone (nearly full range)
-        ax3.axhspan(dof_B_start*1000, dof_B_end*1000, alpha=0.1, color='green',
-                   label=f'DOF: {dof_B_range*1000:.1f}mm')
-        
-        # Add DOF comparison text
-        dof_text = (f"Depth of Field Comparison:\n"
-                   f"Case A (Fixed): {dof_A_range*1000:.1f} mm\n"
-                   f"Case B (Dynamic): {dof_B_range*1000:.1f} mm\n"
-                   f"Improvement: {dof_B_range/dof_A_range:.1f}x")
-        
-        ax4.text(0.02, 0.02, dof_text, transform=ax4.transAxes, fontsize=7, 
-                va='bottom', ha='left',
-                bbox=dict(boxstyle='round,pad=0.3', facecolor='lightblue', alpha=0.8))
+        try:
+            dof_A_range, dof_A_start, dof_A_end = self.engine.calculate_depth_of_field(fixed_depth, 'fixed')
+            dof_B_range, dof_B_start, dof_B_end = self.engine.calculate_depth_of_field(fixed_depth, 'dynamic')
+            
+            # Validate DOF values before using them
+            if (dof_A_start >= 0 and dof_A_end > dof_A_start and 
+                dof_B_start >= 0 and dof_B_end > dof_B_start):
+                
+                # Show DOF zones on images
+                # Case A: Show limited DOF zone
+                ax2.axhspan(dof_A_start*1000, dof_A_end*1000, alpha=0.15, color='green')
+                
+                # Case B: Show extended DOF zone (nearly full range)
+                ax3.axhspan(dof_B_start*1000, dof_B_end*1000, alpha=0.1, color='green')
+                
+                # Add DOF comparison text
+                dof_text = (f"Depth of Field Comparison:\n"
+                           f"Case A (Fixed): {dof_A_range*1000:.1f} mm\n"
+                           f"Case B (Dynamic): {dof_B_range*1000:.1f} mm\n"
+                           f"Improvement: {dof_B_range/dof_A_range:.1f}x")
+                
+                ax4.text(0.02, 0.02, dof_text, transform=ax4.transAxes, fontsize=7, 
+                        va='bottom', ha='left',
+                        bbox=dict(boxstyle='round,pad=0.3', facecolor='lightblue', alpha=0.8))
+            else:
+                print("Warning: Invalid DOF values, skipping DOF visualization")
+                dof_A_range = dof_B_range = 0  # Fallback values
+                
+        except Exception as e:
+            print(f"Error calculating DOF: {e}")
+            dof_A_range = dof_B_range = 0  # Fallback values
 
-        # Add comparison annotations
-        ax2.text(0.02, 0.98, f'Notice: Blurring\naway from focus line\n\nDOF: {dof_A_range*1000:.1f}mm\n(Green shaded zone)', 
-                transform=ax2.transAxes, fontsize=7, va='top', ha='left',
-                bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7))
-        
-        ax3.text(0.02, 0.98, f'Notice: Consistent\nquality at all depths\n\nDOF: {dof_B_range*1000:.1f}mm\n(Nearly full range)', 
-                transform=ax3.transAxes, fontsize=7, va='top', ha='left',
-                bbox=dict(boxstyle='round,pad=0.3', facecolor='lightgreen', alpha=0.7))
+        # Add comparison annotations with error handling
+        try:
+            ax2.text(0.02, 0.98, f'Notice: Blurring\naway from focus line\n\nDOF: {dof_A_range*1000:.1f}mm\n(Green shaded zone)', 
+                    transform=ax2.transAxes, fontsize=7, va='top', ha='left',
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7))
+            
+            ax3.text(0.02, 0.98, f'Notice: Consistent\nquality at all depths\n\nDOF: {dof_B_range*1000:.1f}mm\n(Nearly full range)', 
+                    transform=ax3.transAxes, fontsize=7, va='top', ha='left',
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='lightgreen', alpha=0.7))
+        except:
+            # Fallback annotations without DOF info
+            ax2.text(0.02, 0.98, 'Notice: Blurring\naway from focus line', 
+                    transform=ax2.transAxes, fontsize=7, va='top', ha='left',
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7))
+            
+            ax3.text(0.02, 0.98, 'Notice: Consistent\nquality at all depths', 
+                    transform=ax3.transAxes, fontsize=7, va='top', ha='left',
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='lightgreen', alpha=0.7))
 
         self.fig2.tight_layout(pad=1.0)
         self.canvas2.draw()
