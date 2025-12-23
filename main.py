@@ -285,9 +285,15 @@ class UltrasoundPhysicsEngine:
                 # Sum across scatterers (incoherent scattering)
                 total_amplitude = np.abs(np.sum(coherent_sum))
                 
-                # Apply basic TGC (time gain compensation)
-                tgc_factor = z_sample * 1000  # Simple depth-dependent gain
-                line_intensity[i] = total_amplitude * tgc_factor
+                # Apply realistic frequency and depth-dependent attenuation
+                attenuation_factor = self.calculate_attenuation(z_sample, self.fc)
+                
+                # Apply basic TGC (tries to compensate for attenuation, but not perfectly)
+                # Real systems use TGC to partially compensate, but high freq still loses deep signals
+                tgc_gain = min(3.0, np.sqrt(z_sample * 100))  # Limited TGC compensation
+                
+                # Final signal with attenuation and partial TGC compensation
+                line_intensity[i] = total_amplitude * attenuation_factor * tgc_gain
         
         return z_samples, line_intensity
     
@@ -312,6 +318,24 @@ class UltrasoundPhysicsEngine:
             width = w0 + defocus * divergence
         
         return width
+    
+    def calculate_attenuation(self, depth, frequency):
+        """Calculate frequency and depth-dependent attenuation"""
+        # Typical soft tissue attenuation: ~0.5 dB/cm/MHz
+        # Higher frequency = more attenuation
+        # Greater depth = more attenuation
+        attenuation_coeff = 0.5  # dB/cm/MHz
+        
+        depth_cm = depth * 100  # Convert to cm
+        freq_mhz = frequency / 1e6  # Convert to MHz
+        
+        # Round-trip attenuation (transmit + receive)
+        total_attenuation_db = 2 * attenuation_coeff * depth_cm * freq_mhz
+        
+        # Convert dB to linear attenuation factor
+        attenuation_factor = 10**(-total_attenuation_db / 20)
+        
+        return attenuation_factor
     
     def generate_bmode_image(self, focus_strategy, focus_depth=None):
         """Generate full B-mode image using line-by-line processing"""
@@ -466,9 +490,9 @@ class MainWindow(QMainWindow):
             "<b>Right:</b> MEASURED resolution + DOF<br>"
             "from actual B-mode images (-6dB width).<br>"
             "Solid = measured, dashed = theory.<br><br>"
-            "<b>Key Physics:</b> Frequency affects beam<br>"
-            "WIDTH and DOF, but NOT focus DEPTH.<br>"
-            "Higher freq = narrower beam + shorter DOF."
+            "<b>Key Physics:</b> Higher frequency gives<br>"
+            "better resolution but LESS penetration.<br>"
+            "Deep scatterers fade with high frequency!"
         )
         info.setWordWrap(True)
         controls.addWidget(info)
@@ -493,11 +517,11 @@ class MainWindow(QMainWindow):
         # Frequency control
         vbox2.addWidget(QLabel("Frequency (MHz):"))
         self.slider_freq = QSlider(Qt.Horizontal)
-        self.slider_freq.setRange(25, 500)  # 2.5 to 20 MHz
-        self.slider_freq.setValue(500)  # 20 MHz default
+        self.slider_freq.setRange(25, 200)  # 2.5 to 20 MHz
+        self.slider_freq.setValue(50)  # 5 MHz default
         self.slider_freq.valueChanged.connect(self.update_tab2)
         vbox2.addWidget(self.slider_freq)
-        self.lbl_freq = QLabel("50.0 MHz")
+        self.lbl_freq = QLabel("5.0 MHz")
         vbox2.addWidget(self.lbl_freq)
         
         # Aperture control  
