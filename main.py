@@ -13,10 +13,13 @@ C = 1540.
 
 class UltrasoundPhysicsEngine:
     def __init__(self):
+        # Transducer Parameters, 64 elements, 0.3mm spacing
         self.num_elements = 64
         self.pitch = 0.3e-3
+        # Element positions (x-axis), centered at 0
         width = (self.num_elements - 1) * self.pitch
         self.xi = np.linspace(-width / 2, width / 2, self.num_elements)
+        # Default system parameters, center frequency 5MHz
         self.fc = 5.0e6
         self.active_elements = 64
 
@@ -30,33 +33,37 @@ class UltrasoundPhysicsEngine:
         self.X_grid, self.Z_grid = np.meshgrid(x_axis, z_axis)
         
         # B-mode imaging parameters
-        self.n_lines = 80  # Number of scan lines
-        self.n_samples = 150  # Depth samples per line
+        self.n_lines = 80  # Number of scan lines (columns)
+        self.n_samples = 150  # Depth samples per line (rows)
         self.scan_range = 15e-3  # Lateral scan range (±15mm)
         self.depth_range = 100e-3  # Max depth
         
-        # Generate distributed scatterer field
+        # Generate distributed scatterer field (the tissue phantom)
         self.generate_scatterer_field()
 
     def calculate_single_beam_field(self, focal_depth):
         """ Calculates the 2D Beam field for Tab 1 """
+        # Wave Number
         k = 2 * np.pi * self.fc / C
+        
+        # Distance from each element to the focal point
         dist_focus_to_element = np.sqrt(self.xi ** 2 + focal_depth ** 2)
-        dist_focus_center = focal_depth
 
         # Focusing Phase (The Electronic Lens)
         # Phase shift to compensate for path difference
-        path_diff = dist_focus_to_element - dist_focus_center
+        path_diff = dist_focus_to_element - focal_depth
         focusing_phase = -k * path_diff
 
-        # Grid Calculations
+        # Grid Calculations, Distance from elements to each grid point (pixel)
         DX = self.X_grid[..., np.newaxis] - self.xi[np.newaxis, np.newaxis, :]
         DZ = self.Z_grid[..., np.newaxis]
         dist_grid = np.sqrt(DX ** 2 + DZ ** 2)
 
+        # Total Phase at each grid point from each element
         total_phase = k * dist_grid + focusing_phase[np.newaxis, np.newaxis, :]
         complex_sum = np.sum(np.exp(1j * total_phase), axis=2)
 
+        # Calculate magnitude in dB
         mag = np.abs(complex_sum)
         mag = mag / (np.max(mag) + 1e-12)
         img_db = 20 * np.log10(mag + 1e-12)
@@ -66,56 +73,6 @@ class UltrasoundPhysicsEngine:
 
         return np.clip(img_db, -60, 0), delays
 
-    def simulate_b_mode_resolution(self, fixed_depth):
-        """
-        Simulates the Lateral Resolution (Beam Width) for Case A vs Case B.
-        Instead of full wave sim (slow), we calculate the theoretical beam width
-        at specific target depths.
-        """
-        targets = np.array([20, 40, 60, 80]) * 1e-3  # Target depths
-
-        res_A = []  # Resolution for Case A (Fixed)
-        res_B = []  # Resolution for Case B (Dynamic)
-
-        D = self.active_elements * self.pitch
-        lam = C / self.fc
-
-        for z_target in targets:
-            # --- CASE B: Dynamic Focus ---
-            # Focus is perfectly at z_target.
-            # Width is diffraction limited spot size: F# * lambda
-            # F# = z_target / D
-            # Spot = z_target * lambda / D
-            width_dynamic = (z_target * lam) / D
-            res_B.append(width_dynamic)
-
-            # --- CASE A: Fixed Focus ---
-            # Focus is at fixed_depth (Zf). Target is at z_target (z).
-            # Beam width is Spot Size at Zf + Geometric Defocus
-
-            # 1. Width at the fixed focus
-            w0 = (fixed_depth * lam) / D
-
-            # 2. Defocusing spread
-            # Geometry: The beam converges to w0 at Zf, then spreads.
-            # Spread angle approx D / Zf (actually determined by aperture)
-            distance_off_focus = abs(z_target - fixed_depth)
-
-            # Simple geometric model of defocusing
-            # At aperture (z=0), width is D. At focus (z=Zf), width is w0.
-            # Slope m = (D - w0) / Zf
-            if z_target < fixed_depth:
-                # Converging region
-                width_fixed = w0 + (distance_off_focus / fixed_depth) * (D - w0)
-            else:
-                # Diverging region
-                # Divergence angle theta. tan(theta) approx D / (2*Zf) or diffraction
-                divergence_factor = D / fixed_depth
-                width_fixed = w0 + distance_off_focus * divergence_factor
-
-            res_A.append(width_fixed)
-
-        return targets, np.array(res_A), np.array(res_B)
     
     def measure_bmode_resolution(self, x_lines, z_samples, bmode_image):
         """Measure lateral resolution from actual B-mode image data"""
@@ -623,14 +580,9 @@ class MainWindow(QMainWindow):
 
         ax4.plot(w_A_mm, z_mm, 'r-o', label='Case A: Fixed\n(Measured)', linewidth=2, markersize=4)
         ax4.plot(w_B_mm, z_mm, 'b-o', label='Case B: Dynamic\n(Measured)', linewidth=2, markersize=4)
-        
-        # Also show theoretical predictions for comparison (optional)
-        z_theory, w_A_theory, w_B_theory = self.engine.simulate_b_mode_resolution(fixed_depth)
-        ax4.plot(w_A_theory * 1000, z_theory * 1000, 'r--', alpha=0.5, label='Case A: Theory', linewidth=1)
-        ax4.plot(w_B_theory * 1000, z_theory * 1000, 'b--', alpha=0.5, label='Case B: Theory', linewidth=1)
 
         ax4.set_ylim(100, 0)
-        ax4.set_xlim(0, max(np.max(w_A_mm), np.max(w_B_mm), np.max(w_A_theory*1000), np.max(w_B_theory*1000)) * 1.2)
+        ax4.set_xlim(0, max(np.max(w_A_mm), np.max(w_B_mm)) * 1.2)
         ax4.set_xlabel("Beam Width (mm)", fontsize=9)
         ax4.set_ylabel("Depth (mm)", fontsize=9)
         ax4.set_title('Measured Resolution\nvs Depth', fontsize=9, fontweight='bold')
